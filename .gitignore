@@ -172,3 +172,7 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Arquivos gerados localmente pelo app de duplicatas
+outputs/
+
