@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 from rapidfuzz import fuzz
@@ -13,9 +14,10 @@ st.markdown("""
 Este aplicativo tem como objetivo identificar registros duplicados em planilhas de produções, com base na similaridade dos campos **Título** e **Autor(es)**.
 Serão considerados como duplicatas os pares com **≥ 85% de similaridade** nos dois campos.
 
-⚠️ Arquivos grandes podem demorar alguns minutos para processar.
+⚠️ Arquivos grandes podem demorar para processar.
 """)
 
+# Função para normalizar texto
 def normalize_text(text):
     if pd.isna(text):
         return ""
@@ -23,6 +25,7 @@ def normalize_text(text):
     text = unicodedata.normalize('NFKD', text)
     return "".join([c for c in text if not unicodedata.combining(c)]).strip()
 
+# Pasta de saída
 output_dir = os.path.join(os.getcwd(), "outputs")
 os.makedirs(output_dir, exist_ok=True)
 
@@ -45,10 +48,18 @@ if uploaded_file:
         st.markdown("### 📊 Subtipos encontrados na planilha:")
         st.dataframe(subtipos_info)
 
-        modo = st.radio("🔍 Como deseja realizar a revisão?", ["Manual (um par por vez)", "Automática (com base na similaridade)"])
-        iniciar = st.button("🚀 Iniciar análise")
+        if "modo" not in st.session_state:
+            st.session_state.modo = None
+        if "inicio_analise" not in st.session_state:
+            st.session_state.inicio_analise = False
 
-        if iniciar:
+        st.radio("🔍 Como deseja realizar a revisão?", ["Manual (um par por vez)", "Automática (com base na similaridade)"], key="modo")
+
+        if st.button("🚀 Iniciar análise"):
+            st.session_state.inicio_analise = True
+            st.rerun()
+
+        if st.session_state.inicio_analise:
             processados = [f.replace("limpo_", "").replace(".xlsx", "") for f in os.listdir(output_dir) if f.startswith("limpo_")]
             proximo_subtipo = None
             for subtipo in subtipos_info["Subtipo"]:
@@ -87,10 +98,10 @@ if uploaded_file:
             else:
                 st.header(f"📌 Próximo subtipo a ser analisado: **{proximo_subtipo}**")
                 nome_sub = proximo_subtipo.replace(" ", "_").replace("/", "_")
-                df_sub = df[df["NM_SUBTIPO_PRODUCAO"] == proximo_subtipo].reset_index(drop=True)
 
-                with st.spinner("⏳ Analisando possíveis duplicatas..."):
-                    duplicatas = []
+                df_sub = df[df["NM_SUBTIPO_PRODUCAO"] == proximo_subtipo].reset_index(drop=True)
+                duplicatas = []
+                with st.spinner("🔎 Analisando possíveis duplicatas... isso pode levar alguns minutos."):
                     for idx1, idx2 in combinations(df_sub.index, 2):
                         titulo_sim = fuzz.token_set_ratio(df_sub.loc[idx1, "titulo_norm"], df_sub.loc[idx2, "titulo_norm"])
                         autor_sim = fuzz.token_set_ratio(df_sub.loc[idx1, "autor_norm"], df_sub.loc[idx2, "autor_norm"])
@@ -107,7 +118,6 @@ if uploaded_file:
                                 "sim_titulo": titulo_sim,
                                 "sim_autor": autor_sim,
                             })
-                    time.sleep(1)
 
                 if not duplicatas:
                     st.info("✅ Nenhuma duplicata encontrada para este subtipo.")
@@ -118,8 +128,7 @@ if uploaded_file:
                     historico = []
                     indices_remover = set()
 
-                    if modo == "Manual (um par por vez)":
-                        st.success(f"{len(duplicatas)} pares encontrados para revisão.")
+                    if st.session_state.modo == "Manual (um par por vez)":
                         for i, dup in enumerate(duplicatas):
                             st.markdown(f"#### 🔁 Par {i+1}")
                             col1, col2 = st.columns(2)
@@ -162,7 +171,6 @@ if uploaded_file:
                                         else:
                                             acao = "Manter ambos"
                                         historico.append({**dup, "decisao": acao})
-
                                 df_limpo = df_sub.drop(list(indices_remover)).drop(columns=["titulo_norm", "autor_norm"])
                                 df_limpo.to_excel(os.path.join(output_dir, f"limpo_{nome_sub}.xlsx"), index=False)
                                 pd.DataFrame(historico).to_excel(os.path.join(output_dir, f"auditoria_{nome_sub}.xlsx"), index=False)
@@ -173,9 +181,9 @@ if uploaded_file:
                             if dup['sim_titulo'] + dup['sim_autor'] >= 170:
                                 indices_remover.add(dup['idx2'])
                                 historico.append({**dup, "decisao": "Automático - manter A"})
-
                         df_limpo = df_sub.drop(list(indices_remover)).drop(columns=["titulo_norm", "autor_norm"])
                         df_limpo.to_excel(os.path.join(output_dir, f"limpo_{nome_sub}.xlsx"), index=False)
                         pd.DataFrame(historico).to_excel(os.path.join(output_dir, f"auditoria_{nome_sub}.xlsx"), index=False)
                         st.success(f"Subtipo '{proximo_subtipo}' processado automaticamente.")
+                        time.sleep(1)
                         st.rerun()
