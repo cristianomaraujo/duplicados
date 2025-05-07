@@ -130,14 +130,66 @@ if uploaded_file:
 
                 historico = []
                 indices_remover = set()
-                for dup in duplicatas:
-                    if st.session_state.modo == "Automática (com base na similaridade)":
+
+                if st.session_state.modo == "Manual (um par por vez)":
+                    st.info("🔧 Modo manual: revise cada par e escolha qual manter.")
+                    for i, dup in enumerate(duplicatas):
+                        st.markdown(f"#### 🔁 Par {i+1}")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.write(f"🅰 **Linha {dup['linha_excel_1']}**")
+                            st.write(f"📘 {dup['titulo_1']}")
+                            st.write(f"👤 {dup['autor_1']}")
+                        with col2:
+                            st.write(f"🅱 **Linha {dup['linha_excel_2']}**")
+                            st.write(f"📘 {dup['titulo_2']}")
+                            st.write(f"👤 {dup['autor_2']}")
+
+                        st.radio(
+                            f"Escolha para o par {i+1}",
+                            [f"🅰 Manter A (remover B)",
+                             f"🅱 Manter B (remover A)",
+                             "✅ Manter ambos"],
+                            key=f"escolha_{nome_sub}_{i}",
+                            index=None
+                        )
+
+                    respostas_dadas = all(
+                        st.session_state.get(f"escolha_{nome_sub}_{i}") is not None
+                        for i in range(len(duplicatas))
+                    )
+
+                    if respostas_dadas:
+                        if st.button("💾 Salvar decisões e avançar"):
+                            for i, dup in enumerate(duplicatas):
+                                esc = st.session_state.get(f"escolha_{nome_sub}_{i}")
+                                if "remover B" in esc:
+                                    indices_remover.add(dup["idx2"])
+                                    acao = "Manter A"
+                                elif "remover A" in esc:
+                                    indices_remover.add(dup["idx1"])
+                                    acao = "Manter B"
+                                else:
+                                    acao = "Manter ambos"
+                                historico.append({**dup, "decisao": acao})
+
+                            df_limpo = df_sub.drop(list(indices_remover)).drop(columns=["titulo_norm", "autor_norm"])
+                            df_limpo.to_excel(os.path.join(output_dir, f"limpo_{nome_sub}.xlsx"), index=False)
+                            pd.DataFrame(historico).to_excel(os.path.join(output_dir, f"auditoria_{nome_sub}.xlsx"), index=False)
+                            st.success(f"Subtipo '{proximo_subtipo}' processado manualmente.")
+                            time.sleep(1)
+                            st.rerun()
+                    else:
+                        st.warning("⚠️ Responda todos os pares antes de continuar.")
+
+                else:
+                    for dup in duplicatas:
                         indices_remover.add(max(dup["idx1"], dup["idx2"]))
                         historico.append({**dup, "decisao": "Automático - manter mais antigo"})
 
-                df_limpo = df_sub.drop(list(indices_remover)).drop(columns=["titulo_norm", "autor_norm"])
-                df_limpo.to_excel(os.path.join(output_dir, f"limpo_{nome_sub}.xlsx"), index=False)
-                pd.DataFrame(historico).to_excel(os.path.join(output_dir, f"auditoria_{nome_sub}.xlsx"), index=False)
-                st.success(f"Subtipo '{proximo_subtipo}' processado com {len(duplicatas)} pares.")
-                time.sleep(1)
-                st.rerun()
+                    df_limpo = df_sub.drop(list(indices_remover)).drop(columns=["titulo_norm", "autor_norm"])
+                    df_limpo.to_excel(os.path.join(output_dir, f"limpo_{nome_sub}.xlsx"), index=False)
+                    pd.DataFrame(historico).to_excel(os.path.join(output_dir, f"auditoria_{nome_sub}.xlsx"), index=False)
+                    st.success(f"Subtipo '{proximo_subtipo}' processado com {len(duplicatas)} pares.")
+                    time.sleep(1)
+                    st.rerun()
