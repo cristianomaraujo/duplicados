@@ -3,20 +3,19 @@ import pandas as pd
 from rapidfuzz import fuzz
 from itertools import combinations
 import unicodedata
-import os
-import time
+import io
 
-st.set_page_config(page_title="Revisão de Duplicatas por Subtipo", layout="wide")
-st.title("🧠 Triagem de Duplicatas por Subtipo de Produção")
+st.set_page_config(page_title="Identificação de Duplicatas", layout="wide")
+st.title("🧠 Identificação Automática de Duplicatas")
 
 st.markdown("""
-Este aplicativo tem como objetivo identificar registros duplicados em planilhas de produções, com base na similaridade dos campos **Título** e **Autor(es)**.
-Serão considerados como duplicatas os pares com **≥ 85% de similaridade** nos dois campos.
-
-⚠️ Arquivos grandes podem demorar para processar.
+Este aplicativo identifica registros duplicados em planilhas de produções com base na similaridade dos campos **NM_PRODUCAO** (título) e **AUTOR(ES)**.  
+Produções duplicadas receberão:
+- `"SIM"` na coluna **Produção duplicada**
+- O **ID principal** na coluna **ID_UNIFICADO**
+- Os IDs dos pares duplicados nas colunas **ID_VEICULO1** e **ID_VEICULO2**
 """)
 
-# Função para normalizar texto
 def normalize_text(text):
     if pd.isna(text):
         return ""
@@ -24,172 +23,50 @@ def normalize_text(text):
     text = unicodedata.normalize('NFKD', text)
     return "".join([c for c in text if not unicodedata.combining(c)]).strip()
 
-# Pasta de saída
-output_dir = os.path.join(os.getcwd(), "outputs")
-os.makedirs(output_dir, exist_ok=True)
-
 uploaded_file = st.file_uploader("📄 Faça upload da planilha (.xlsx)", type=["xlsx"])
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
-    df.columns = df.columns.str.replace("'", "").str.strip()
+    df.columns = df.columns.str.strip()
 
-    required_cols = ['Título', 'AUTOR(ES)', 'NM_SUBTIPO_PRODUCAO']
+    required_cols = ['NM_PRODUCAO', 'AUTOR(ES)', 'NM_SUBTIPO_PRODUCAO', 'ID_ADD_PRODUCAO_INTELECTUAL']
     if not all(col in df.columns for col in required_cols):
-        st.error(f"A planilha deve conter as colunas obrigatórias: {required_cols}")
+        st.error(f"A planilha deve conter as colunas: {required_cols}")
     else:
-        df["titulo_norm"] = df["Título"].apply(normalize_text)
+        df["titulo_norm"] = df["NM_PRODUCAO"].apply(normalize_text)
         df["autor_norm"] = df["AUTOR(ES)"].apply(normalize_text)
+        df["Produção duplicada"] = "NÃO"
+        df["ID_UNIFICADO"] = ""
+        df["ID_VEICULO1"] = ""
+        df["ID_VEICULO2"] = ""
 
-        subtipos_info = df["NM_SUBTIPO_PRODUCAO"].value_counts().reset_index()
-        subtipos_info.columns = ["Subtipo", "Registros"]
+        for subtipo in df["NM_SUBTIPO_PRODUCAO"].unique():
+            sub_df = df[df["NM_SUBTIPO_PRODUCAO"] == subtipo]
+            indices = sub_df.index.tolist()
 
-        st.markdown("### 📊 Subtipos encontrados na planilha:")
-        st.dataframe(subtipos_info)
+            for idx1, idx2 in combinations(indices, 2):
+                titulo_sim = fuzz.token_set_ratio(df.at[idx1, "titulo_norm"], df.at[idx2, "titulo_norm"])
+                autor_sim = fuzz.token_set_ratio(df.at[idx1, "autor_norm"], df.at[idx2, "autor_norm"])
 
-        if "modo" not in st.session_state:
-            st.session_state.modo = None
-        if "inicio_analise" not in st.session_state:
-            st.session_state.inicio_analise = False
+                if titulo_sim >= 85 and autor_sim >= 85:
+                    idx_keep = min(idx1, idx2)
+                    idx_mark = max(idx1, idx2)
 
-        st.radio("🔍 Como deseja realizar a revisão?", ["Manual (um par por vez)", "Automática (com base na similaridade)"], key="modo")
+                    df.at[idx_mark, "Produção duplicada"] = "SIM"
+                    df.at[idx_mark, "ID_UNIFICADO"] = df.at[idx_keep, "ID_ADD_PRODUCAO_INTELECTUAL"]
+                    df.at[idx_mark, "ID_VEICULO1"] = df.at[idx1, "ID_ADD_PRODUCAO_INTELECTUAL"]
+                    df.at[idx_mark, "ID_VEICULO2"] = df.at[idx2, "ID_ADD_PRODUCAO_INTELECTUAL"]
 
-        if st.button("🚀 Iniciar análise"):
-            st.session_state.inicio_analise = True
-            st.rerun()
+        df.drop(columns=["titulo_norm", "autor_norm"], inplace=True)
 
-        if st.session_state.inicio_analise:
-            processados = [f.replace("limpo_", "").replace(".xlsx", "") for f in os.listdir(output_dir) if f.startswith("limpo_")]
-            proximo_subtipo = None
-            for subtipo in subtipos_info["Subtipo"]:
-                nome_padrao = subtipo.replace(" ", "_").replace("/", "_")
-                if nome_padrao not in processados:
-                    proximo_subtipo = subtipo
-                    break
+        st.success("✅ Análise concluída. Baixe a planilha com os resultados.")
+        buffer = io.BytesIO()
+        df.to_excel(buffer, index=False, engine='openpyxl')
+        buffer.seek(0)
 
-            if not proximo_subtipo:
-                st.success("🎉 Todos os subtipos foram processados!")
-                if st.button("📅 Consolidar planilhas finais"):
-                    limpos = [f for f in os.listdir(output_dir) if f.startswith("limpo_")]
-                    auditorias = [f for f in os.listdir(output_dir) if f.startswith("auditoria_")]
-
-                    df_consolidados = pd.concat(
-                        [pd.read_excel(os.path.join(output_dir, f)) for f in limpos],
-                        ignore_index=True
-                    ) if limpos else pd.DataFrame()
-
-                    df_auditoria = pd.concat(
-                        [pd.read_excel(os.path.join(output_dir, f)) for f in auditorias],
-                        ignore_index=True
-                    ) if auditorias else pd.DataFrame()
-
-                    path_final = os.path.join(output_dir, "consolidado_completo.xlsx")
-                    path_auditoria = os.path.join(output_dir, "consolidado_auditoria.xlsx")
-
-                    df_consolidados.to_excel(path_final, index=False)
-                    df_auditoria.to_excel(path_auditoria, index=False)
-
-                    st.success("✅ Consolidação concluída!")
-                    with open(path_final, "rb") as f1:
-                        st.download_button("⬇️ Baixar planilha final consolidada", f1, "consolidado_completo.xlsx")
-                    with open(path_auditoria, "rb") as f2:
-                        st.download_button("⬇️ Baixar planilha de auditoria consolidada", f2, "consolidado_auditoria.xlsx")
-
-                    st.markdown("### 📈 Estatísticas Gerais")
-                    total_registros = len(df)
-                    total_mantidos = len(df_consolidados)
-                    total_removidos = total_registros - total_mantidos
-
-                    st.write(f"🔢 Total de registros originais: {total_registros}")
-                    st.write(f"✅ Total de registros mantidos: {total_mantidos}")
-                    st.write(f"❌ Total de registros removidos como duplicatas: {total_removidos}")
-
-            else:
-                st.header(f"📌 Próximo subtipo a ser analisado: **{proximo_subtipo}**")
-                nome_sub = proximo_subtipo.replace(" ", "_").replace("/", "_")
-
-                df_sub = df[df["NM_SUBTIPO_PRODUCAO"] == proximo_subtipo].reset_index(drop=True)
-                duplicatas = []
-                with st.spinner("🔎 Analisando possíveis duplicatas... isso pode levar alguns minutos."):
-                    for idx1, idx2 in combinations(df_sub.index, 2):
-                        titulo_sim = fuzz.token_set_ratio(df_sub.loc[idx1, "titulo_norm"], df_sub.loc[idx2, "titulo_norm"])
-                        autor_sim = fuzz.token_set_ratio(df_sub.loc[idx1, "autor_norm"], df_sub.loc[idx2, "autor_norm"])
-                        if titulo_sim >= 85 and autor_sim >= 85:
-                            duplicatas.append({
-                                "idx1": idx1,
-                                "idx2": idx2,
-                                "linha_excel_1": idx1 + 2,
-                                "linha_excel_2": idx2 + 2,
-                                "titulo_1": df_sub.loc[idx1, "Título"],
-                                "titulo_2": df_sub.loc[idx2, "Título"],
-                                "autor_1": df_sub.loc[idx1, "AUTOR(ES)"],
-                                "autor_2": df_sub.loc[idx2, "AUTOR(ES)"],
-                                "sim_titulo": titulo_sim,
-                                "sim_autor": autor_sim,
-                            })
-
-                historico = []
-                indices_remover = set()
-
-                if st.session_state.modo == "Manual (um par por vez)":
-                    st.info("🔧 Modo manual: revise cada par e escolha qual manter.")
-                    for i, dup in enumerate(duplicatas):
-                        st.markdown(f"#### 🔁 Par {i+1}")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.write(f"🅰 **Linha {dup['linha_excel_1']}**")
-                            st.write(f"📘 {dup['titulo_1']}")
-                            st.write(f"👤 {dup['autor_1']}")
-                        with col2:
-                            st.write(f"🅱 **Linha {dup['linha_excel_2']}**")
-                            st.write(f"📘 {dup['titulo_2']}")
-                            st.write(f"👤 {dup['autor_2']}")
-
-                        st.radio(
-                            f"Escolha para o par {i+1}",
-                            [f"🅰 Manter A (remover B)",
-                             f"🅱 Manter B (remover A)",
-                             "✅ Manter ambos"],
-                            key=f"escolha_{nome_sub}_{i}",
-                            index=None
-                        )
-
-                    respostas_dadas = all(
-                        st.session_state.get(f"escolha_{nome_sub}_{i}") is not None
-                        for i in range(len(duplicatas))
-                    )
-
-                    if respostas_dadas:
-                        if st.button("💾 Salvar decisões e avançar"):
-                            for i, dup in enumerate(duplicatas):
-                                esc = st.session_state.get(f"escolha_{nome_sub}_{i}")
-                                if "remover B" in esc:
-                                    indices_remover.add(dup["idx2"])
-                                    acao = "Manter A"
-                                elif "remover A" in esc:
-                                    indices_remover.add(dup["idx1"])
-                                    acao = "Manter B"
-                                else:
-                                    acao = "Manter ambos"
-                                historico.append({**dup, "decisao": acao})
-
-                            df_limpo = df_sub.drop(list(indices_remover)).drop(columns=["titulo_norm", "autor_norm"])
-                            df_limpo.to_excel(os.path.join(output_dir, f"limpo_{nome_sub}.xlsx"), index=False)
-                            pd.DataFrame(historico).to_excel(os.path.join(output_dir, f"auditoria_{nome_sub}.xlsx"), index=False)
-                            st.success(f"Subtipo '{proximo_subtipo}' processado manualmente.")
-                            time.sleep(1)
-                            st.rerun()
-                    else:
-                        st.warning("⚠️ Responda todos os pares antes de continuar.")
-
-                else:
-                    for dup in duplicatas:
-                        indices_remover.add(max(dup["idx1"], dup["idx2"]))
-                        historico.append({**dup, "decisao": "Automático - manter mais antigo"})
-
-                    df_limpo = df_sub.drop(list(indices_remover)).drop(columns=["titulo_norm", "autor_norm"])
-                    df_limpo.to_excel(os.path.join(output_dir, f"limpo_{nome_sub}.xlsx"), index=False)
-                    pd.DataFrame(historico).to_excel(os.path.join(output_dir, f"auditoria_{nome_sub}.xlsx"), index=False)
-                    st.success(f"Subtipo '{proximo_subtipo}' processado com {len(duplicatas)} pares.")
-                    time.sleep(1)
-                    st.rerun()
+        st.download_button(
+            "⬇️ Baixar planilha com marcação de duplicatas",
+            data=buffer,
+            file_name="duplicatas_marcadas.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
